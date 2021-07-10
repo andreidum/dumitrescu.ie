@@ -1,0 +1,41 @@
+# - name: Set a hostname
+#   ansible.builtin.hostname:
+#     name: bob
+---
+- name: Install packages
+  hosts: bob
+  gather_facts: False
+  vars:
+    domain: dumitrescu.ie
+    # this_zone_id: Z09633892RYPSXKOMBB3F
+    # s3_website_zone_id: Z1BKCTXD74EZPE
+    region: eu-west-1
+  tasks:
+    # - name: Print all available facts
+    #   ansible.builtin.debug:
+    #     var: ansible_facts
+    - apt:
+        pkg:
+          - kitty-terminfo
+          - zstd
+          - unzip
+
+- name: Setup Mail server
+  hosts: bob
+  gather_facts: False
+  tasks:
+    - name: Create maddy directory
+      file:
+        path: /usr/local/maddy
+        state: directory
+    - name: Extract maddy archive
+      unarchive:
+        src: "https://github.com/foxcpp/maddy/releases/download/v0.4.4/maddy-0.4.4+dcdf4a7-x86_64-linux-musl.tar.zst"
+        dest: /usr/local/maddy/
+        remote_src: yes
+        # handler: zip
+        extra_opts:
+          - -l zstd
+          - --strip-components=1
+          #- -j # junk path
+        #   - zstd
