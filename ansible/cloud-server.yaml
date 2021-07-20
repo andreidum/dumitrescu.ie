@@ -1,0 +1,214 @@
+---
+- name: Set up cloud server
+  hosts: bob
+  gather_facts: False
+  # collections:
+  #   - nginxinc.nginx_core
+  # roles:
+  #   - role: nginx
+  vars:
+    domain_name: dumitrescu.ie
+    mail_domain_name: dumitrescu.ie
+    hostname: bob
+    maddy_release: v0.4.4
+    maddy_url: "https://github.com/foxcpp/maddy/releases/download/v0.4.4/maddy-0.4.4+dcdf4a7-x86_64-linux-musl.tar.zst"
+    golang_version: "1.16.6"
+    golang_url: "https://golang.org/dl/go{{golang_version}}.linux-amd64.tar.gz"
+    #golang_url: "https://golang.org/dl/go1.16.6.linux-amd64.tar.gz"
+    maddy_tarball: "/opt/maddy/tarballs/{{maddy_release}}.tar.zst"
+    maddy_repo_dir: "/srv/git/maddy"
+    # this_zone_id: Z09633892RYPSXKOMBB3F
+    # s3_website_zone_id: Z1BKCTXD74EZPE
+    region: eu-west-1
+  pre_tasks:
+    - name: Update apt cache
+      apt: update_cache=true cache_valid_time=600
+      changed_when: false
+  tasks:
+    - name: "Set hostname / {{hostname}}"
+      ansible.builtin.hostname:
+        name: "{{hostname}}"
+        use: systemd
+    - name: Update hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "127.0.0.1 {{hostname}}"
+        insertafter: '127\.0\.0\.1 localhost.*$'
+        state: present
+    - name: Upgrade all apt packages
+      apt: upgrade=dist force_apt_get=yes
+    - name: Install apt packages
+      apt:
+        force_apt_get: yes
+        cache_valid_time: 3600
+        pkg:
+          - kitty-terminfo
+          - zstd
+          - unzip
+          - git
+          - fish
+          - fd-find
+          - ripgrep
+          - emacs
+          - gcc
+          - libc6-dev
+          - make
+          - scdoc
+          - acl
+          - rsync
+    - name: Remove apt packages
+      apt:
+        pkg:
+          - "exim4*"
+        state: absent
+        purge: true
+    - name: Ensure 'wheel' group
+      ansible.builtin.group:
+        name: wheel
+        state: present
+    - ansible.builtin.user:
+        name: andrei
+        shell: /usr/bin/fish
+        group: wheel
+    - name: Allow 'admin' group to have passwordless sudo
+      lineinfile:
+        dest: /etc/sudoers
+        state: present
+        regexp: "^%wheel"
+        line: "%wheel ALL=(ALL) NOPASSWD: ALL"
+        validate: visudo -cf %s
+    - name: Add sudoers users to wheel group
+      user:
+        name: "{{ item }}"
+        groups: wheel
+        append: yes
+      with_items:
+        - andrei
+    - user:
+        name: git
+        shell: /usr/bin/git-shell
+        home: /srv/git
+        state: present
+    - user:
+        name: maddy
+        shell: /bin/false
+        home: /opt/maddy
+        state: present
+    - ansible.posix.authorized_key:
+        user: "{{ item }}"
+        state: present
+        key: https://github.com/andreidum.keys
+      with_items:
+        - git
+        - admin
+        - andrei
+    - command: git init --bare "/srv/git/{{item}}"
+      args:
+        creates: "/srv/git/{{item}}/HEAD"
+      with_items:
+        - dumitrescu.ie.git
+        - yadm-files.git
+      become_user: git
+
+      # - name: Create maddy directories
+      #   file:
+      #     path: "/opt/maddy/releases/{{maddy_release}}"
+      #     state: directory
+      #     owner: maddy
+      # - name: "Download maddy/{{maddy_release}}"
+      #   ansible.builtin.get_url:
+      #     owner: maddy
+      #     url: "{{maddy_url}}"
+      #     dest: "{{maddy_tarball}}"
+      # - name: Extract maddy archive
+      #   ansible.builtin.command: "tar -I zstd -xvf {{maddy_tarball}} --strip-components 1 -C /opt/maddy/releases/{{maddy_release}}"
+      #   args:
+      #     creates: "/opt/maddy/releases/{{maddy_release}}/maddy"
+      # - name: Link current release
+      #   file:
+      #     src: "/opt/maddy/releases/{{maddy_release}}/"
+      #     dest: "/opt/maddy/current"
+      #     state: link
+      # - name: Remove unsupported settings on old systemd
+
+    - user:
+        name: maddy
+        shell: /sbin/nologin
+        home: /var/lib/maddy
+        comment: maddy mail server
+    - name: Clone maddy repo
+      ansible.builtin.git:
+        repo: "https://github.com/foxcpp/maddy.git"
+        dest: "{{maddy_repo_dir}}"
+        version: "{{maddy_release}}"
+      register: maddy_git
+      become_user: git
+    - name: Unarchive golang
+      ansible.builtin.unarchive:
+        remote_src: yes
+        src: "{{golang_url}}"
+        dest: /usr/local
+    - name: Set Go paths
+      ansible.builtin.copy:
+        dest: "/etc/profile.d/go.sh"
+        mode: "755"
+        content: |
+          export GOROOT="/usr/local/go"
+          export PATH="/usr/local/go/bin:$PATH"
+    - name: Build maddy
+      ansible.builtin.command:
+        chdir: "{{maddy_repo_dir}}"
+        cmd: ./build.sh
+        creates: build/maddy
+      become_user: git
+      register: build_maddy
+      when: maddy_git.changed
+    - name: Install maddy
+      ansible.builtin.command:
+        chdir: "{{maddy_repo_dir}}"
+        cmd: ./build.sh install
+      when: build_maddy.changed
+      register: maddy_install
+    - name: Add template / maddy.conf
+      ansible.builtin.template:
+        #src: "{{ lookup('template','bob/etc/maddy/maddy.conf.j2') }}"
+        src: bob/etc/maddy/maddy.conf.j2
+        dest: /etc/maddy/maddy.conf
+        owner: maddy
+        mode: "0644"
+      register: maddy_conf
+
+      # args:
+      #   creates: "/srv/git/{{item}}/HEAD"
+      # with_items:
+      #   - dumitrescu.ie.git
+      #   - yadm-files.git
+      # become_user: git
+
+    # - lineinfile:
+    #     state: present
+    #     path: "/opt/maddy/current/systemd/maddy.service"
+    #     search_string: "{{item}}"
+    #   with_items:
+    #     - "ProtectHostname"
+    #     - "RestrictSUIDSGID"
+    # - name: Copy systemd unit files
+    #   copy:
+    #     remote_src: yes
+    #     src: "{{item}}"
+    #     dest: /etc/systemd/system/
+    #   with_items:
+    #     - "/opt/maddy/current/systemd/maddy.service"
+    #   register: copy_systemd
+    - name: Allow maddy to read certs
+      ansible.builtin.command: setfacl -R -m u:maddy:rX {{item}}
+      with_items:
+        - "{{letsencrypt_certs_dir}}/fullchain_{{domain_name}}.crt"
+        - "{{letsencrypt_keys_dir}}/{{domain_name}}.key"
+    - name: Reload systemd daemon
+      ansible.builtin.command: "systemctl daemon-reload"
+      when: maddy_install.changed
+    - name: Reload maddy
+      ansible.builtin.command: "systemctl restart maddy"
+      when: maddy_conf.changed
+      # when: copy_systemd.changed

@@ -1,0 +1,8 @@
+collections:
+  - community.crypto
+  - community.general
+  - amazon.aws
+  - name: nginxinc.nginx_core
+    version: 0.3.0
+# roles:
+#   - geerlingguy.certbot
