@@ -1,0 +1,18 @@
+domain_name: dumitrescu.ie
+mail_domain_name: mail.dumitrescu.ie
+region: eu-west-1
+
+hostname: bob
+maddy_release: v0.4.4
+maddy_url: "https://github.com/foxcpp/maddy/releases/download/v0.4.4/maddy-0.4.4+dcdf4a7-x86_64-linux-musl.tar.zst"
+maddy_home_dir: "/srv/maddy"
+golang_version: "1.16.6"
+golang_url: "https://golang.org/dl/go{{golang_version}}.linux-amd64.tar.gz"
+maddy_tarball: "/opt/maddy/tarballs/{{maddy_release}}.tar.zst"
+maddy_repo_dir: "/srv/git/maddy"
+
+letsencrypt_dir: /etc/letsencrypt
+letsencrypt_keys_dir: /etc/letsencrypt/keys
+letsencrypt_csrs_dir: /etc/letsencrypt/csrs
+letsencrypt_certs_dir: /etc/letsencrypt/certs
+letsencrypt_account_key: /etc/letsencrypt/account/account.key

@@ -1,0 +1,14 @@
+- hosts: bob
+  roles:
+    - common
+    - role: base-server
+      tags: base-server
+    - role: certs
+      tags: certs
+    - role: mail
+      tags: mail
+
+- hosts: localhost
+  roles:
+    - role: web
+      tags: web

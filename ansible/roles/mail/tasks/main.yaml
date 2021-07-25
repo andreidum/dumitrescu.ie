@@ -1,0 +1,159 @@
+- name: Remove apt packages
+  apt:
+    pkg:
+      - "exim4*"
+    state: absent
+    purge: true
+- name: Add maddy user
+  ansible.builtin.user:
+    name: maddy
+    shell: /bin/false
+    home: "{{maddy_home_dir}}"
+    state: present
+    comment: maddy mail server
+- name: Clone maddy repo
+  ansible.builtin.git:
+    repo: "https://github.com/foxcpp/maddy.git"
+    dest: "{{maddy_repo_dir}}"
+    version: "{{maddy_release}}"
+  register: maddy_git
+  become_user: git
+- name: Unarchive golang
+  ansible.builtin.unarchive:
+    remote_src: yes
+    src: "{{golang_url}}"
+    dest: /usr/local
+- name: Set Go paths
+  ansible.builtin.copy:
+    dest: "/etc/profile.d/go.sh"
+    mode: "755"
+    content: |
+      export GOROOT="/usr/local/go"
+      export PATH="/usr/local/go/bin:$PATH"
+- name: Build maddy
+  ansible.builtin.command:
+    chdir: "{{maddy_repo_dir}}"
+    cmd: ./build.sh
+    creates: build/maddy
+  become_user: git
+  register: build_maddy
+  when: maddy_git.changed
+- name: Install maddy
+  ansible.builtin.command:
+    chdir: "{{maddy_repo_dir}}"
+    cmd: ./build.sh install
+  when: build_maddy.changed
+  notify: "Restart maddy"
+- name: Add template / maddy.conf
+  ansible.builtin.template:
+    src: etc/maddy/maddy.conf.j2
+    dest: /etc/maddy/maddy.conf
+    owner: maddy
+    mode: "0644"
+  register: maddy_conf
+  notify: "Restart maddy"
+- name: Allow maddy to read certs
+  ansible.builtin.command: setfacl -R -m u:maddy:rX {{item}}
+  with_items:
+    - "{{letsencrypt_certs_dir}}/fullchain_{{domain_name}}.crt"
+    - "{{letsencrypt_keys_dir}}/{{domain_name}}.key"
+- name: Set maddy directories
+  ansible.builtin.replace:
+    path: /etc/systemd/system/maddy.service
+    regexp: "/var/lib/maddy"
+    replace: "{{maddy_home_dir}}"
+  register: maddy_unit_file_directories
+  notify: "Reload systemd"
+
+- name: Ensure maddy is started
+  ansible.builtin.systemd:
+    enabled: yes
+    name: maddy
+    state: started
+- community.aws.route53:
+    record: "{{mail_domain_name}}"
+    type: A
+    value: "{{ec2_bob_info.instances.0.public_ip_address}}"
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  delegate_to: localhost
+  tags:
+    - route53
+- community.aws.route53:
+    record: "{{domain_name}}"
+    type: MX
+    value: "10 {{mail_domain_name}}"
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  delegate_to: localhost
+  tags:
+    - route53
+- community.aws.route53:
+    record: "{{item}}"
+    type: TXT
+    value: '"v=spf1 ip4:{{ec2_bob_info.instances.0.public_ip_address}} mx ~all"'
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  delegate_to: localhost
+  with_items:
+    - "{{domain_name}}"
+    - "{{mail_domain_name}}"
+- community.aws.route53:
+    record: "_dmarc.{{domain_name}}"
+    type: TXT
+    value: '"v=DMARC1; p=quarantine; ruf=mailto:postmaster@{{domain_name}}"'
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  with_items:
+    - "{{domain_name}}"
+    - "{{mail_domain_name}}"
+  delegate_to: localhost
+  tags:
+    - route53
+- name: Mark domain as MTA-STS compatible / STS1 record
+  community.aws.route53:
+    record: "_mta-sts.{{domain_name}}"
+    type: TXT
+    value: '"v=STS1; id=1"'
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  delegate_to: localhost
+  tags:
+    - route53
+- name: Mark domain as MTA-STS compatible / TLSRPTv1 record
+  community.aws.route53:
+    record: "_smtp._tls.{{domain_name}}"
+    type: TXT
+    value: '"v=TLSRPTv1;rua=mailto:postmaster@{{domain_name}}"'
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  delegate_to: localhost
+  tags:
+    - route53
+
+- name: Fetch DKIM record value
+  ansible.builtin.fetch:
+    src: "{{ maddy_home_dir }}/dkim_keys/{{domain_name}}_default.dns"
+    dest: .
+# Work around  [Invalid Resource Record: 'FATAL problem: CharacterStringTooLong (Value is too long)
+- name: Add R53 entry for DKIM1
+  delegate_to: localhost
+  community.aws.route53:
+    record: "default._domainkey.{{domain_name}}"
+    type: TXT
+    value: '"{{s1}}" "{{s2}}"'
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  vars:
+    whole_record: "{{ lookup('file', 'bob/%s/dkim_keys/%s_default.dns' %(maddy_home_dir, domain_name))}}"
+    s1: "{{whole_record[:255]}}"
+    s2: "{{whole_record[255:]}}"
+  tags:
+    - route53

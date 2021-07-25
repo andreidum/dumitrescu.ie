@@ -1,0 +1,67 @@
+---
+- name: Update apt cache
+  apt: update_cache=true cache_valid_time=600
+  changed_when: false
+- name: "Set hostname / {{hostname}}"
+  ansible.builtin.hostname:
+    name: "{{hostname}}"
+    use: systemd
+- name: Update hosts file
+  lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{hostname}}"
+    insertafter: '127\.0\.0\.1 localhost.*$'
+    state: present
+- name: Upgrade all apt packages
+  apt: upgrade=dist force_apt_get=yes
+- name: Install apt packages
+  apt:
+    force_apt_get: yes
+    cache_valid_time: 3600
+    pkg:
+      - kitty-terminfo
+      - zstd
+      - unzip
+      - git
+      - fish
+      - fd-find
+      - ripgrep
+      - emacs
+      - gcc
+      - libc6-dev
+      - make
+      - scdoc
+      - acl
+      - rsync
+      - netcat
+- name: Remove apt packages
+  apt:
+    pkg:
+      - "exim4*"
+    state: absent
+    purge: true
+- name: Ensure 'wheel' group
+  ansible.builtin.group:
+    name: wheel
+    state: present
+- ansible.builtin.user:
+    name: andrei
+    shell: /usr/bin/fish
+    group: wheel
+- ansible.builtin.user:
+    name: root
+    shell: /usr/bin/fish
+- name: Allow 'admin' group to have passwordless sudo
+  lineinfile:
+    dest: /etc/sudoers
+    state: present
+    regexp: "^%wheel"
+    line: "%wheel ALL=(ALL) NOPASSWD: ALL"
+    validate: visudo -cf %s
+- name: Add sudoers users to wheel group
+  user:
+    name: "{{ item }}"
+    groups: wheel
+    append: yes
+  with_items:
+    - andrei

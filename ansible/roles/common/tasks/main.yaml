@@ -1,0 +1,7 @@
+- name: Gather info about instace / bob
+  delegate_to: localhost
+  community.aws.ec2_instance_info:
+    region: "{{ region }}"
+    filters:
+      "tag:Name": bob
+  register: ec2_bob_info

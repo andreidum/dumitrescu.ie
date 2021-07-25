@@ -1,0 +1,214 @@
+- name: Get dumitrescu zone id
+  community.aws.route53_zone:
+    zone: dumitrescu.ie
+  register: dumitrescu_route53_info
+- name: S3 Bucket / {{site}}
+  vars:
+    - site: "{{ domain_name }}"
+  amazon.aws.s3_bucket:
+    name: "{{ site }}"
+    state: present
+    policy: "{{lookup('template','bucket-policy.json.j2')}}"
+- name: S3 Bucket / www.{{site}}
+  vars:
+    - site: "www.{{ domain_name }}"
+  amazon.aws.s3_bucket:
+    name: "{{ site }}"
+    state: present
+    policy: "{{lookup('template','bucket-policy.json.j2')}}"
+- name: S3 Bucket / dev.{{site}}
+  vars:
+    - site: "dev.{{ domain_name }}"
+  amazon.aws.s3_bucket:
+    name: "{{ site }}"
+    state: present
+    policy: "{{lookup('template','bucket-policy.json.j2')}}"
+- name: S3 Website / {{site}}
+  vars:
+    - site: "{{domain_name}}"
+  community.aws.s3_website:
+    name: "{{site}}"
+    state: present
+    suffix: index.html
+- name: S3 Website / {{site}}
+  vars:
+    - site: "dev.{{domain_name}}"
+  community.aws.s3_website:
+    name: "{{site}}"
+    state: present
+    suffix: index.html
+- name: S3 Website / {{site}}
+  vars:
+    - site: "www.{{domain_name}}"
+  community.aws.s3_website:
+    name: "{{site}}"
+    state: present
+    redirect_all_requests: "{{domain_name}}"
+
+- community.aws.route53:
+    record: "dev.{{domain_name}}"
+    type: A
+    value: "s3-website-{{region}}.amazonaws.com."
+    alias: true
+    state: present
+    zone: "{{domain_name}}"
+    alias_hosted_zone_id: "{{s3_website_zone_id}}"
+    overwrite: true
+- name: Gather info about instace / bob
+  community.aws.ec2_instance_info:
+    region: "{{ region }}"
+    filters:
+      "tag:Name": bob
+  register: ec2_bob_info
+  tags:
+    - bob
+- name: Set up AWS EC2 instance / bob
+  community.aws.ec2_instance:
+    state: started
+    instance_type: t2.micro
+    key_name: andrei-key
+    region: "{{region}}"
+    instance_ids:
+      - i-09d1d8a582af507a0
+  tags:
+    - bob
+- community.aws.route53:
+    record: "bob.{{domain_name}}"
+    type: A
+    value: "{{ec2_bob_info.instances.0.public_ip_address}}"
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  tags:
+    - bob
+
+- community.aws.route53:
+    record: "git.{{domain_name}}"
+    type: A
+    value: "{{ec2_bob_info.instances.0.public_ip_address}}"
+    state: present
+    zone: "{{domain_name}}"
+    overwrite: true
+  tags:
+    - route53
+- name: create/update a certificate with a chain
+  delegate_to: localhost
+  community.aws.aws_acm:
+    certificate: "{{ lookup('file', 'bob/%s/%s.crt' %(letsencrypt_certs_dir,domain_name))}}"
+    private_key: "{{lookup('file', 'bob/%s/%s.key' %(letsencrypt_keys_dir,domain_name))}}"
+    name_tag: "{{domain_name}}"
+    certificate_chain: "{{ lookup('file', 'bob/%s/fullchain_%s.crt' %(letsencrypt_certs_dir,domain_name))}}"
+    state: present
+    region: us-east-1 # required by Cloudfront
+  register: cert_create
+  tags:
+    - acm
+    - cloudfront
+- debug:
+    var: cert_create
+  tags:
+    - cloudfront
+- name: create a cloudfront distribution for "{{domain_name}}"
+  delegate_to: localhost
+  community.aws.cloudfront_distribution:
+    state: present
+    distribution_id: E2I9XALPYHK8YJ
+    aliases:
+      - "{{domain_name}}"
+      - "www.{{domain_name}}"
+    region: "{{region}}"
+    default_origin_domain_name: "{{domain_name}}.s3-website-{{region}}.amazonaws.com"
+    # origins:
+    # disable tls to s3 backend
+    # redirect http to https
+    #default_origin_domain_name: "{{domain_name}}.s3.{{region}}.amazonaws.com"
+    # diff": {
+    #             "after": {
+    #                 "DefaultCacheBehavior": {},
+    #                 "ViewerCertificate": {
+    #                     "CloudFrontDefaultCertificate": false
+    #                 }
+    #             },
+    #             "before": {
+    #                 "DefaultCacheBehavior": {
+    #                     "FunctionAssociations": {
+    #                         "Quantity": 0
+    #                     },
+    #                     "TrustedKeyGroups": {
+    #                         "Enabled": false,
+    #                         "Quantity": 0
+    #                     }
+    #                 },
+    #                 "ViewerCertificate": {}
+    #             }
+    #        "logging": {
+    #             "bucket": "",
+    #             "enabled": false,
+    #             "include_cookies": false,
+    #             "prefix": ""
+    #         },
+    #         "origin_groups": {
+    #             "quantity": 0
+    #         },
+    #         "origins": {
+    #             "items": [
+    #                 {
+    #                     "connection_attempts": 3,
+    #                     "connection_timeout": 10,
+    #                     "custom_headers": {
+    #                         "quantity": 0
+    #                     },
+    #                     "custom_origin_config": {
+    #                         "http_port": 80,
+    #                         "https_port": 443,
+    #                         "origin_keepalive_timeout": 5,
+    #                         "origin_protocol_policy": "http-only",
+    #                         "origin_read_timeout": 30,
+    #                         "origin_ssl_protocols": {
+    #                             "items": [
+    #                                 "TLSv1",
+    #                                 "TLSv1.1",
+    #                                 "TLSv1.2"
+    #                             ],
+    #                             "quantity": 3
+    #                         }
+    #                     },
+    viewer_certificate:
+      acm_certificate_arn: "{{cert_create.certificate.arn}}"
+      ssl_support_method: sni-only
+      cloudfront_default_certificate: false
+    tags:
+      Name: "{{domain_name}}"
+  tags:
+    - cloudfront
+  register: cf_distro
+- debug:
+    var: cf_distro
+  tags:
+    - cloudfront
+- name: Update R53 alias for "{{domain_name}}"
+  delegate_to: localhost
+  community.aws.route53:
+    record: "{{domain_name}}"
+    type: A
+    value: "{{ cf_distro.domain_name }}"
+    alias: true
+    state: present
+    zone: "{{domain_name}}"
+    alias_hosted_zone_id: "Z2FDTNDATAQYW2"
+    overwrite: true
+  tags:
+    - cloudfront
+- name: Update R53 alias for "www.{{domain_name}}"
+  delegate_to: localhost
+  community.aws.route53:
+    record: "www.{{domain_name}}"
+    type: A
+    value: "{{ cf_distro.domain_name }}"
+    alias: true
+    state: present
+    zone: "{{domain_name}}"
+    alias_hosted_zone_id: "Z2FDTNDATAQYW2"
+    overwrite: true
+  tags:
+    - cloudfront

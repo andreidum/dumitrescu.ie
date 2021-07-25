@@ -1,0 +1,79 @@
+- name: "Create required /etc/letsencrypt directories"
+  file:
+    path: "/etc/letsencrypt/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: u=rwx,g=x,o=x
+  with_items:
+    - account
+    - certs
+    - csrs
+    - keys
+- name: "Generate a Let's Encrypt account key"
+  shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | sudo tee {{ letsencrypt_account_key }}; fi"
+- name: "Check if certificate for domain needs to be renewed: {{domain_name}}"
+  ansible.builtin.shell: "openssl x509 -checkend $(( 86400 * {{certificate_expire_grace_period_days}} ))  -noout -in {{ letsencrypt_certs_dir }}/fullchain_{{domain_name}}.crt"
+  register: "main_certificate_valid" # rc == 1 /Certificate will expir"e
+  ignore_errors: true
+- name: "Generate Let's Encrypt private key for domain: {{domain_name}}"
+  ansible.builtin.shell: "openssl genrsa 2048 | sudo tee {{letsencrypt_keys_dir}}/{{ domain_name }}.key"
+  when: main_certificate_valid is failed
+- name: "Generate Let's Encrypt CSR for {{domain_name}}"
+  ansible.builtin.shell: "openssl req -new -sha256 -key {{letsencrypt_keys_dir}}/{{ domain_name }}.key -subj \"/CN={{ domain_name }}\" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf <(printf \"\n[SAN]\nsubjectAltName=DNS:{{ domain_name }},DNS:www.{{ domain_name }}, DNS:mail.{{ domain_name }}\")) | sudo tee {{letsencrypt_csrs_dir}}/{{ domain_name }}.csr"
+  args:
+    executable: /bin/bash
+  when: main_certificate_valid is failed
+- name: "Begin Let's Encrypt challenges"
+  community.crypto.acme_certificate:
+    acme_directory: "{{ acme_directory }}"
+    acme_version: "{{ acme_version }}"
+    account_key_src: "{{ letsencrypt_account_key }}"
+    account_email: "{{ acme_email }}"
+    terms_agreed: 1
+    challenge: "{{ acme_challenge_type }}"
+    csr: "{{ letsencrypt_csrs_dir }}/{{ domain_name }}.csr"
+    dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
+    fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}.crt"
+    remaining_days: "{{certificate_period_days}}"
+  register: acme_challenge_dumitrescu_ie
+  when: main_certificate_valid is failed
+- name: Implement R53 challenge
+  delegate_to: localhost
+  community.aws.route53:
+    zone: "{{domain_name}}"
+    record: "{{ item.key }}"
+    type: TXT
+    ttl: 60
+    state: present
+    wait: yes
+    # Note: item.value is a list of TXT entries, and route53
+    # requires every entry to be enclosed in quotes
+    value: "{{ item.value | map('regex_replace', '^(.*)$', '\"\\1\"' ) | list }}"
+  loop: "{{ acme_challenge_dumitrescu_ie.challenge_data_dns | dict2items }}"
+  tags: route53
+  when: acme_challenge_dumitrescu_ie is changed
+- name: Let the challenge be validated and retrieve the cert and intermediate certificate
+  community.crypto.acme_certificate:
+    acme_directory: "{{ acme_directory }}"
+    acme_version: "{{ acme_version }}"
+    account_key_src: "{{ letsencrypt_account_key }}"
+    account_email: "{{ acme_email }}"
+    terms_agreed: 1
+    challenge: "{{ acme_challenge_type }}"
+    csr: "{{ letsencrypt_csrs_dir }}/{{ domain_name }}.csr"
+    dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
+    fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}.crt"
+    remaining_days: "{{certificate_period_days}}"
+    data: "{{ acme_challenge_dumitrescu_ie }}"
+  when: acme_challenge_dumitrescu_ie is changed
+- name: Fetch remote certificate
+  ansible.builtin.fetch:
+    src: "{{ item }}"
+    dest: .
+  with_items:
+    - "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
+    - "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}.crt"
+    - "{{letsencrypt_keys_dir}}/{{domain_name}}.key"
+  tags:
+    - cloudfront
