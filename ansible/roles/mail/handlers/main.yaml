@@ -1,0 +1,7 @@
+---
+- name: Restart maddy
+  ansible.builtin.command: "systemctl restart maddy"
+  when: maddy_conf.changed
+- name: Reload systemd
+  ansible.builtin.command: "systemctl daemon-reload"
+  when: maddy_install.changed or maddy_unit_file_directories.changed
