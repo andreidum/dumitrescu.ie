@@ -20,6 +20,7 @@
     cache_valid_time: 3600
     pkg:
       - kitty-terminfo
+      - lsof
       - zstd
       - unzip
       - git
@@ -34,6 +35,9 @@
       - acl
       - rsync
       - netcat
+      - parted
+      - lvm2
+      - xfsprogs
 - name: Remove apt packages
   apt:
     pkg:
@@ -65,3 +69,35 @@
     append: yes
   with_items:
     - andrei
+- name: Create partition
+  ansible.builtin.parted:
+    device: /dev/xvdb
+    number: 1
+    flags: [lvm]
+    state: present
+- name: Create volume group
+  lvg:
+    vg: main-vg
+    pvs: /dev/xvdb1
+    pesize: 16
+- name: Create the /srv logical volume
+  lvol:
+    vg: main-vg
+    lv: srv-lv
+    size: 20g
+    force: yes
+- name: Create /srv/ if does not exist
+  file:
+    path: /srv
+    state: directory
+    mode: "0755"
+- name: format the xfs filesystem
+  filesystem:
+    fstype: xfs
+    dev: /dev/main-vg/srv-lv
+- name: mount the main-vg on /srv
+  mount:
+    path: /srv
+    src: /dev/main-vg/srv-lv
+    fstype: xfs
+    state: mounted

@@ -1,6 +1,7 @@
 - hosts: bob
   roles:
-    - common
+    - role: common
+      tags: common
     - role: base-server
       tags: base-server
     - role: certs
